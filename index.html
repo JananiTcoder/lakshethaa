@@ -41,14 +41,14 @@
 </head>
 <body>
 
-<!-- Visible -->
+<!-- Visible camera -->
 <video id="cameraView" autoplay playsinline muted></video>
 
 <div id="overlay">
   <video id="resultVideo" src="output.mp4" controls></video>
 </div>
 
-<!-- Hidden -->
+<!-- Hidden processing elements -->
 <video id="camera" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
 <img id="referenceImg" src="reference.jpg">
@@ -61,17 +61,34 @@ const ctx = canvas.getContext("2d");
 const refImg = document.getElementById("referenceImg");
 const resultVideo = document.getElementById("resultVideo");
 
-navigator.mediaDevices.getUserMedia({ video: true })
-  .then(stream => {
+/* ---------- FORCE BACK CAMERA ---------- */
+async function startBackCamera() {
+  try {
+    // Preferred: strict rear camera
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { exact: "environment" } },
+      audio: false
+    });
     camera.srcObject = stream;
     cameraView.srcObject = stream;
-  });
+  } catch (err) {
+    // Fallback: rear camera if exact not supported
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment" },
+      audio: false
+    });
+    camera.srcObject = stream;
+    cameraView.srcObject = stream;
+  }
+}
 
+startBackCamera();
+
+/* ---------- OPENCV LOGIC ---------- */
 refImg.onload = () => {
-  cv['onRuntimeInitialized'] = () => {
+  cv.onRuntimeInitialized = () => {
     console.log("OpenCV ready (ORB)");
 
-    /* ---- PREPARE REFERENCE IMAGE ---- */
     let refColor = cv.imread(refImg);
     let refGray = new cv.Mat();
     cv.cvtColor(refColor, refGray, cv.COLOR_BGR2GRAY);
@@ -82,9 +99,6 @@ refImg.onload = () => {
 
     orb.detectAndCompute(refGray, new cv.Mat(), refKeypoints, refDescriptors);
 
-    console.log("Reference keypoints:", refKeypoints.size());
-
-    /* ---- DETECTION LOOP ---- */
     function detect() {
       if (camera.readyState !== 4) {
         requestAnimationFrame(detect);
@@ -113,14 +127,9 @@ refImg.onload = () => {
 
         let goodMatches = 0;
         for (let i = 0; i < matches.size(); i++) {
-          if (matches.get(i).distance < 50) {
-            goodMatches++;
-          }
+          if (matches.get(i).distance < 50) goodMatches++;
         }
 
-        console.log("Good matches:", goodMatches);
-
-        /* ---- MATCH THRESHOLD ---- */
         if (goodMatches > 15) {
           resultVideo.style.display = "block";
           resultVideo.muted = false;

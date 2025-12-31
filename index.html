@@ -16,12 +16,9 @@
 <body>
 
 <video id="camera" autoplay playsinline></video>
-
 <canvas id="canvas"></canvas>
 
-<!-- IMPORTANT: not muted, controls off; audio will play from here -->
 <video id="videoSource" src="output.mp4" playsinline></video>
-
 <canvas id="videoCanvas"></canvas>
 <img id="referenceImg" src="reference.jpg">
 
@@ -33,6 +30,9 @@ const videoSource = document.getElementById('videoSource');
 const videoCanvas = document.getElementById('videoCanvas');
 const videoCtx = videoCanvas.getContext('2d');
 const refImg = document.getElementById('referenceImg');
+
+// flag: has user allowed audio?
+let audioUnlocked = false;
 
 // Start camera
 async function startCamera() {
@@ -49,9 +49,16 @@ async function startCamera() {
 }
 startCamera();
 
-// Autoplay with audio often needs a user gesture
+// One user gesture to unlock audio, but do NOT start playing
 document.body.addEventListener('click', () => {
-  videoSource.play().catch(()=>{});
+  audioUnlocked = true;
+  // try a silent play & immediately pause to satisfy autoplay policy
+  videoSource.muted = true;
+  videoSource.play().then(() => {
+    videoSource.pause();
+    videoSource.currentTime = 0;
+    videoSource.muted = false;
+  }).catch(()=>{});
 }, { once:true });
 
 cv['onRuntimeInitialized'] = () => {
@@ -73,9 +80,8 @@ cv['onRuntimeInitialized'] = () => {
     canvas.width = camera.videoWidth;
     canvas.height = camera.videoHeight;
 
-    let frame = new cv.Mat(canvas.height, canvas.width, cv.CV_8UC4);
     ctx.drawImage(camera, 0, 0, canvas.width, canvas.height);
-    frame = cv.imread(canvas);
+    let frame = cv.imread(canvas);
 
     const grayFrame = new cv.Mat();
     cv.cvtColor(frame, grayFrame, cv.COLOR_BGR2GRAY);
@@ -83,6 +89,8 @@ cv['onRuntimeInitialized'] = () => {
     const kpFrame = new cv.KeyPointVector();
     const descFrame = new cv.Mat();
     orb.detectAndCompute(grayFrame, new cv.Mat(), kpFrame, descFrame);
+
+    let detected = false; // assume not detected this frame
 
     if (!descFrame.empty()) {
       const matches = new cv.DMatchVector();
@@ -110,7 +118,9 @@ cv['onRuntimeInitialized'] = () => {
         const H = cv.findHomography(srcMat, dstMat, cv.RANSAC, 5, mask);
 
         if (!H.empty()) {
-          // Draw current video frame to hidden canvas
+          detected = true;
+
+          // draw current video frame to hidden canvas
           videoCanvas.width = videoSource.videoWidth || 640;
           videoCanvas.height = videoSource.videoHeight || 360;
           videoCtx.drawImage(videoSource, 0, 0, videoCanvas.width, videoCanvas.height);
@@ -137,6 +147,18 @@ cv['onRuntimeInitialized'] = () => {
         mask.delete();
       }
       matches.delete();
+    }
+
+    // control video playback based on detection
+    if (detected && audioUnlocked) {
+      if (videoSource.paused) {
+        videoSource.play().catch(()=>{});
+      }
+    } else {
+      if (!videoSource.paused) {
+        videoSource.pause();
+        videoSource.currentTime = 0; // restart from beginning next time
+      }
     }
 
     cv.imshow(canvas, frame);

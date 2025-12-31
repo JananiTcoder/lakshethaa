@@ -2,166 +2,113 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Image Replace With Video</title>
-
+<title>AR Image Replacement</title>
 <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
-
 <style>
-  body {
-    margin: 0;
-    background: black;
-    overflow: hidden;
-  }
-
-  #cameraView {
-    width: 100vw;
-    height: 100vh;
-    object-fit: cover;
-  }
-
-  #overlay {
-    position: absolute;
-    top: 30%;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 300px;
-    height: 200px;
-  }
-
-  #targetImg, #resultVideo {
-    width: 100%;
-    height: 100%;
-  }
-
-  #resultVideo {
-    display: none;
-  }
-
-  #camera, #canvas {
-    display: none;
-  }
+  body { margin:0; background:black; overflow:hidden; }
+  canvas { width:100vw; height:100vh; object-fit:cover; display:block; }
+  #videoSource { display:none; }
 </style>
 </head>
 <body>
 
-<!-- Camera -->
-<video id="cameraView" autoplay playsinline muted></video>
-
-<!-- Overlay -->
-<div id="overlay">
-  <img id="targetImg" src="reference.jpg">
-  <video id="resultVideo" src="output.mp4" playsinline></video>
-</div>
-
-<!-- Hidden processing -->
-<video id="camera" autoplay playsinline></video>
+<video id="videoSource" src="output.mp4" autoplay loop muted></video>
+<video id="camera" autoplay playsinline muted style="display:none;"></video>
 <canvas id="canvas"></canvas>
+<img id="referenceImg" src="reference.jpg" style="display:none;">
 
 <script>
-const camera = document.getElementById("camera");
-const cameraView = document.getElementById("cameraView");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const camera = document.getElementById('camera');
+const videoSource = document.getElementById('videoSource');
+const refImg = document.getElementById('referenceImg');
 
-const targetImg = document.getElementById("targetImg");
-const resultVideo = document.getElementById("resultVideo");
+navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio:false })
+  .then(stream => camera.srcObject = stream);
 
-let detected = false;
+cv['onRuntimeInitialized'] = () => {
+    let refColor = cv.imread(refImg);
+    let refGray = new cv.Mat();
+    cv.cvtColor(refColor, refGray, cv.COLOR_BGR2GRAY);
 
-/* ---------- FORCE BACK CAMERA ---------- */
-async function startCamera() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { exact: "environment" } },
-      audio: false
-    });
-    camera.srcObject = stream;
-    cameraView.srcObject = stream;
-  } catch {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "environment" },
-      audio: false
-    });
-    camera.srcObject = stream;
-    cameraView.srcObject = stream;
-  }
-}
+    let orb = new cv.ORB();
+    let kpRef = new cv.KeyPointVector();
+    let descRef = new cv.Mat();
+    orb.detectAndCompute(refGray, new cv.Mat(), kpRef, descRef);
 
-startCamera();
+    const bf = new cv.BFMatcher(cv.NORM_HAMMING);
 
-/* ---------- OPENCV ---------- */
-cv.onRuntimeInitialized = () => {
-  console.log("OpenCV ready");
+    function process() {
+        if(camera.readyState !== 4) { requestAnimationFrame(process); return; }
 
-  let refGray = new cv.Mat();
-  let refColor = cv.imread(targetImg);
-  cv.cvtColor(refColor, refGray, cv.COLOR_BGR2GRAY);
+        canvas.width = camera.videoWidth;
+        canvas.height = camera.videoHeight;
+        ctx.drawImage(camera,0,0,canvas.width,canvas.height);
+        let frame = cv.imread(canvas);
+        let grayFrame = new cv.Mat();
+        cv.cvtColor(frame, grayFrame, cv.COLOR_BGR2GRAY);
 
-  let orb = new cv.ORB(1000);
-  let refKP = new cv.KeyPointVector();
-  let refDesc = new cv.Mat();
+        let kpFrame = new cv.KeyPointVector();
+        let descFrame = new cv.Mat();
+        orb.detectAndCompute(grayFrame, new cv.Mat(), kpFrame, descFrame);
 
-  orb.detectAndCompute(refGray, new cv.Mat(), refKP, refDesc);
+        if(!descFrame.empty()) {
+            let matches = new cv.DMatchVectorVector();
+            let matched = new cv.DMatchVector();
+            bf.match(descRef, descFrame, matched);
 
-  console.log("Reference keypoints:", refKP.size());
+            let goodMatches = [];
+            for(let i=0;i<matched.size();i++){
+                if(matched.get(i).distance < 60) goodMatches.push(matched.get(i));
+            }
 
-  function detect() {
-    if (detected) return;
-    if (camera.readyState !== 4) {
-      requestAnimationFrame(detect);
-      return;
+            if(goodMatches.length >= 10){
+                // compute homography
+                let srcPts = [];
+                let dstPts = [];
+                for(let i=0;i<goodMatches.length;i++){
+                    srcPts.push(kpRef.get(goodMatches[i].queryIdx).pt.x);
+                    srcPts.push(kpRef.get(goodMatches[i].queryIdx).pt.y);
+                    dstPts.push(kpFrame.get(goodMatches[i].trainIdx).pt.x);
+                    dstPts.push(kpFrame.get(goodMatches[i].trainIdx).pt.y);
+                }
+                let srcMat = cv.matFromArray(goodMatches.length,1,cv.CV_32FC2,srcPts);
+                let dstMat = cv.matFromArray(goodMatches.length,1,cv.CV_32FC2,dstPts);
+                let mask = new cv.Mat();
+                let H = cv.findHomography(srcMat,dstMat,cv.RANSAC,5,mask);
+
+                if(!H.empty()){
+                    let vidFrame = cv.imread(videoSource); // single frame
+                    let warped = new cv.Mat();
+                    let dsize = new cv.Size(frame.cols, frame.rows);
+                    cv.warpPerspective(vidFrame, warped, H, dsize);
+                    // overlay
+                    let alpha = 1.0;
+                    cv.addWeighted(warped, alpha, frame, 1-alpha,0,frame);
+                    cv.imshow(canvas, frame);
+
+                    vidFrame.delete();
+                    warped.delete();
+                    H.delete();
+                    srcMat.delete();
+                    dstMat.delete();
+                    mask.delete();
+                }
+            }
+
+            matched.delete();
+        }
+
+        frame.delete();
+        grayFrame.delete();
+        kpFrame.delete();
+        descFrame.delete();
+
+        requestAnimationFrame(process);
     }
 
-    canvas.width = camera.videoWidth * 0.5;
-    canvas.height = camera.videoHeight * 0.5;
-    ctx.drawImage(camera, 0, 0, canvas.width, canvas.height);
-
-    let frame = cv.imread(canvas);
-    let gray = new cv.Mat();
-    cv.cvtColor(frame, gray, cv.COLOR_BGR2GRAY);
-
-    let kp = new cv.KeyPointVector();
-    let desc = new cv.Mat();
-
-    orb.detectAndCompute(gray, new cv.Mat(), kp, desc);
-
-    if (!desc.empty()) {
-      let bf = new cv.BFMatcher(cv.NORM_HAMMING);
-      let matches = new cv.DMatchVector();
-
-      bf.match(refDesc, desc, matches);
-
-      let good = 0;
-      for (let i = 0; i < matches.size(); i++) {
-        if (matches.get(i).distance < 70) good++;
-      }
-
-      console.log("Good matches:", good);
-
-      if (good >= 10) {
-        detected = true;
-
-        targetImg.style.display = "none";
-        resultVideo.style.display = "block";
-        resultVideo.muted = false;
-        resultVideo.play();
-
-        return;
-      }
-
-      matches.delete();
-      bf.delete();
-    }
-
-    frame.delete();
-    gray.delete();
-    kp.delete();
-    desc.delete();
-
-    requestAnimationFrame(detect);
-  }
-
-  detect();
+    process();
 };
 </script>
 

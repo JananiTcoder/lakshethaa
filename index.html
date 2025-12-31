@@ -6,135 +6,150 @@
 <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 <style>
   body { margin:0; background:black; overflow:hidden; }
-  video, canvas { display:block; width:100vw; height:100vh; object-fit:cover; }
+  #camera, #canvas {
+    position:fixed; inset:0;
+    width:100vw; height:100vh; object-fit:cover;
+  }
   #videoSource, #videoCanvas, #referenceImg { display:none; }
 </style>
 </head>
 <body>
 
-<video id="camera" autoplay playsinline muted></video>
+<video id="camera" autoplay playsinline></video>
+
 <canvas id="canvas"></canvas>
-<video id="videoSource" src="output.mp4" autoplay loop muted playsinline></video>
+
+<!-- IMPORTANT: not muted, controls off; audio will play from here -->
+<video id="videoSource" src="output.mp4" playsinline></video>
+
 <canvas id="videoCanvas"></canvas>
 <img id="referenceImg" src="reference.jpg">
 
 <script>
 const camera = document.getElementById('camera');
 const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
 const videoSource = document.getElementById('videoSource');
 const videoCanvas = document.getElementById('videoCanvas');
 const videoCtx = videoCanvas.getContext('2d');
 const refImg = document.getElementById('referenceImg');
 
-// Start back camera
+// Start camera
 async function startCamera() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { exact: "environment" }, width: { ideal:1280 }, height:{ ideal:720 } },
-            audio: false
-        });
-        camera.srcObject = stream;
-    } catch (e) {
-        console.warn("Back camera failed, fallback to default", e);
-        const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
-        camera.srcObject = stream;
-    }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { exact:"environment" }, width:{ideal:1280}, height:{ideal:720} },
+      audio: false
+    });
+    camera.srcObject = stream;
+  } catch (e) {
+    const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+    camera.srcObject = stream;
+  }
 }
 startCamera();
 
+// Autoplay with audio often needs a user gesture
+document.body.addEventListener('click', () => {
+  videoSource.play().catch(()=>{});
+}, { once:true });
+
 cv['onRuntimeInitialized'] = () => {
-    // Prepare reference image
-    const refMat = cv.imread(refImg);
-    const refGray = new cv.Mat();
-    cv.cvtColor(refMat, refGray, cv.COLOR_BGR2GRAY);
+  // Prepare reference image
+  const refMat = cv.imread(refImg);
+  const refGray = new cv.Mat();
+  cv.cvtColor(refMat, refGray, cv.COLOR_BGR2GRAY);
 
-    const orb = new cv.ORB();
-    const kpRef = new cv.KeyPointVector();
-    const descRef = new cv.Mat();
-    orb.detectAndCompute(refGray, new cv.Mat(), kpRef, descRef);
+  const orb = new cv.ORB();
+  const kpRef = new cv.KeyPointVector();
+  const descRef = new cv.Mat();
+  orb.detectAndCompute(refGray, new cv.Mat(), kpRef, descRef);
 
-    const bf = new cv.BFMatcher(cv.NORM_HAMMING);
+  const bf = new cv.BFMatcher(cv.NORM_HAMMING);
 
-    function process() {
-        if (camera.readyState !== 4) { requestAnimationFrame(process); return; }
+  function process() {
+    if (camera.readyState !== 4) { requestAnimationFrame(process); return; }
 
-        canvas.width = camera.videoWidth;
-        canvas.height = camera.videoHeight;
+    canvas.width = camera.videoWidth;
+    canvas.height = camera.videoHeight;
 
-        let frame = cv.imread(camera);
-        let grayFrame = new cv.Mat();
-        cv.cvtColor(frame, grayFrame, cv.COLOR_BGR2GRAY);
+    let frame = new cv.Mat(canvas.height, canvas.width, cv.CV_8UC4);
+    ctx.drawImage(camera, 0, 0, canvas.width, canvas.height);
+    frame = cv.imread(canvas);
 
-        const kpFrame = new cv.KeyPointVector();
-        const descFrame = new cv.Mat();
-        orb.detectAndCompute(grayFrame, new cv.Mat(), kpFrame, descFrame);
+    const grayFrame = new cv.Mat();
+    cv.cvtColor(frame, grayFrame, cv.COLOR_BGR2GRAY);
 
-        if (!descFrame.empty()) {
-            const matches = new cv.DMatchVector();
-            bf.match(descRef, descFrame, matches);
+    const kpFrame = new cv.KeyPointVector();
+    const descFrame = new cv.Mat();
+    orb.detectAndCompute(grayFrame, new cv.Mat(), kpFrame, descFrame);
 
-            let goodMatches = [];
-            for (let i = 0; i < matches.size(); i++) {
-                if (matches.get(i).distance < 50) goodMatches.push(matches.get(i));
-            }
+    if (!descFrame.empty()) {
+      const matches = new cv.DMatchVector();
+      bf.match(descRef, descFrame, matches);
 
-            if (goodMatches.length >= 10) {
-                const srcPts = [], dstPts = [];
-                for (let i = 0; i < goodMatches.length; i++) {
-                    srcPts.push(kpRef.get(goodMatches[i].queryIdx).pt.x);
-                    srcPts.push(kpRef.get(goodMatches[i].queryIdx).pt.y);
-                    dstPts.push(kpFrame.get(goodMatches[i].trainIdx).pt.x);
-                    dstPts.push(kpFrame.get(goodMatches[i].trainIdx).pt.y);
-                }
+      let goodMatches = [];
+      for (let i = 0; i < matches.size(); i++) {
+        if (matches.get(i).distance < 50) goodMatches.push(matches.get(i));
+      }
 
-                const srcMat = cv.matFromArray(goodMatches.length, 1, cv.CV_32FC2, srcPts);
-                const dstMat = cv.matFromArray(goodMatches.length, 1, cv.CV_32FC2, dstPts);
-                const mask = new cv.Mat();
-                const H = cv.findHomography(srcMat, dstMat, cv.RANSAC, 5, mask);
-
-                if (!H.empty()) {
-                    // Draw current video frame to hidden canvas
-                    videoCanvas.width = videoSource.videoWidth;
-                    videoCanvas.height = videoSource.videoHeight;
-                    videoCtx.drawImage(videoSource, 0, 0, videoCanvas.width, videoCanvas.height);
-                    const vidFrame = cv.imread(videoCanvas);
-
-                    // Warp video to detected image
-                    const warped = new cv.Mat();
-                    const dsize = new cv.Size(frame.cols, frame.rows);
-                    cv.warpPerspective(vidFrame, warped, H, dsize);
-
-                    // Create mask from warped video
-                    const maskWarped = new cv.Mat();
-                    cv.cvtColor(warped, maskWarped, cv.COLOR_BGR2GRAY);
-                    cv.threshold(maskWarped, maskWarped, 1, 255, cv.THRESH_BINARY);
-
-                    // Copy warped video onto frame using mask
-                    warped.copyTo(frame, maskWarped);
-
-                    cv.imshow(canvas, frame);
-
-                    vidFrame.delete();
-                    warped.delete();
-                    maskWarped.delete();
-                    H.delete();
-                    srcMat.delete();
-                    dstMat.delete();
-                    mask.delete();
-                }
-            }
-            matches.delete();
+      if (goodMatches.length >= 10 && videoSource.readyState >= 2) {
+        const srcPts = [];
+        const dstPts = [];
+        for (let i = 0; i < goodMatches.length; i++) {
+          const m = goodMatches[i];
+          const pRef = kpRef.get(m.queryIdx).pt;
+          const pFrame = kpFrame.get(m.trainIdx).pt;
+          srcPts.push(pRef.x, pRef.y);
+          dstPts.push(pFrame.x, pFrame.y);
         }
 
-        frame.delete();
-        grayFrame.delete();
-        kpFrame.delete();
-        descFrame.delete();
+        const srcMat = cv.matFromArray(goodMatches.length, 1, cv.CV_32FC2, srcPts);
+        const dstMat = cv.matFromArray(goodMatches.length, 1, cv.CV_32FC2, dstPts);
+        const mask = new cv.Mat();
+        const H = cv.findHomography(srcMat, dstMat, cv.RANSAC, 5, mask);
 
-        requestAnimationFrame(process);
+        if (!H.empty()) {
+          // Draw current video frame to hidden canvas
+          videoCanvas.width = videoSource.videoWidth || 640;
+          videoCanvas.height = videoSource.videoHeight || 360;
+          videoCtx.drawImage(videoSource, 0, 0, videoCanvas.width, videoCanvas.height);
+          const vidFrame = cv.imread(videoCanvas);
+
+          const warped = new cv.Mat();
+          const dsize = new cv.Size(frame.cols, frame.rows);
+          cv.warpPerspective(vidFrame, warped, H, dsize);
+
+          const maskWarped = new cv.Mat();
+          cv.cvtColor(warped, maskWarped, cv.COLOR_BGR2GRAY);
+          cv.threshold(maskWarped, maskWarped, 1, 255, cv.THRESH_BINARY);
+
+          warped.copyTo(frame, maskWarped);
+
+          vidFrame.delete();
+          warped.delete();
+          maskWarped.delete();
+        }
+
+        H.delete();
+        srcMat.delete();
+        dstMat.delete();
+        mask.delete();
+      }
+      matches.delete();
     }
 
-    process();
+    cv.imshow(canvas, frame);
+
+    frame.delete();
+    grayFrame.delete();
+    kpFrame.delete();
+    descFrame.delete();
+
+    requestAnimationFrame(process);
+  }
+
+  process();
 };
 </script>
 </body>

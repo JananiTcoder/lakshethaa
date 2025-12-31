@@ -11,6 +11,11 @@
     width:100vw; height:100vh; object-fit:cover;
   }
   #videoSource, #videoCanvas, #referenceImg { display:none; }
+  #debug {
+    position:fixed; left:8px; top:8px;
+    color:#0f0; font-family:monospace; font-size:12px;
+    background:rgba(0,0,0,0.5); padding:4px 6px; border-radius:4px;
+  }
 </style>
 </head>
 <body>
@@ -22,6 +27,8 @@
 <canvas id="videoCanvas"></canvas>
 <img id="referenceImg" src="reference.jpg">
 
+<div id="debug">waiting for click…</div>
+
 <script>
 const camera = document.getElementById('camera');
 const canvas = document.getElementById('canvas');
@@ -30,9 +37,10 @@ const videoSource = document.getElementById('videoSource');
 const videoCanvas = document.getElementById('videoCanvas');
 const videoCtx = videoCanvas.getContext('2d');
 const refImg = document.getElementById('referenceImg');
+const debugEl = document.getElementById('debug');
 
-// flag: has user allowed audio?
 let audioUnlocked = false;
+let videoReady = false;
 
 // Start camera
 async function startCamera() {
@@ -49,20 +57,26 @@ async function startCamera() {
 }
 startCamera();
 
+// When video metadata is loaded, we know width/height
+videoSource.addEventListener('loadedmetadata', () => {
+  videoReady = true;
+});
+
 // One user gesture to unlock audio, but do NOT start playing
 document.body.addEventListener('click', () => {
   audioUnlocked = true;
-  // try a silent play & immediately pause to satisfy autoplay policy
+  debugEl.textContent = 'tap ok, show reference image to start video';
   videoSource.muted = true;
   videoSource.play().then(() => {
     videoSource.pause();
     videoSource.currentTime = 0;
     videoSource.muted = false;
-  }).catch(()=>{});
+  }).catch(() => {
+    debugEl.textContent = 'tap ok, but silent pre-play failed';
+  });
 }, { once:true });
 
 cv['onRuntimeInitialized'] = () => {
-  // Prepare reference image
   const refMat = cv.imread(refImg);
   const refGray = new cv.Mat();
   cv.cvtColor(refMat, refGray, cv.COLOR_BGR2GRAY);
@@ -90,18 +104,22 @@ cv['onRuntimeInitialized'] = () => {
     const descFrame = new cv.Mat();
     orb.detectAndCompute(grayFrame, new cv.Mat(), kpFrame, descFrame);
 
-    let detected = false; // assume not detected this frame
+    let detected = false;
+    let goodCount = 0;
 
     if (!descFrame.empty()) {
       const matches = new cv.DMatchVector();
       bf.match(descRef, descFrame, matches);
 
-      let goodMatches = [];
+      const goodMatches = [];
       for (let i = 0; i < matches.size(); i++) {
-        if (matches.get(i).distance < 50) goodMatches.push(matches.get(i));
+        const d = matches.get(i).distance;
+        // more forgiving threshold
+        if (d < 80) goodMatches.push(matches.get(i));
       }
+      goodCount = goodMatches.length;
 
-      if (goodMatches.length >= 10 && videoSource.readyState >= 2) {
+      if (goodMatches.length >= 8 && videoReady) {
         const srcPts = [];
         const dstPts = [];
         for (let i = 0; i < goodMatches.length; i++) {
@@ -120,10 +138,11 @@ cv['onRuntimeInitialized'] = () => {
         if (!H.empty()) {
           detected = true;
 
-          // draw current video frame to hidden canvas
-          videoCanvas.width = videoSource.videoWidth || 640;
-          videoCanvas.height = videoSource.videoHeight || 360;
-          videoCtx.drawImage(videoSource, 0, 0, videoCanvas.width, videoCanvas.height);
+          const vw = videoSource.videoWidth || 640;
+          const vh = videoSource.videoHeight || 360;
+          videoCanvas.width = vw;
+          videoCanvas.height = vh;
+          videoCtx.drawImage(videoSource, 0, 0, vw, vh);
           const vidFrame = cv.imread(videoCanvas);
 
           const warped = new cv.Mat();
@@ -149,15 +168,19 @@ cv['onRuntimeInitialized'] = () => {
       matches.delete();
     }
 
+    // Simple debug text
+    debugEl.textContent =
+      `audioUnlocked=${audioUnlocked} detected=${detected} goodMatches=${goodCount}`;
+
     // control video playback based on detection
     if (detected && audioUnlocked) {
       if (videoSource.paused) {
-        videoSource.play().catch(()=>{});
+        videoSource.play().catch(() => {});
       }
     } else {
       if (!videoSource.paused) {
         videoSource.pause();
-        videoSource.currentTime = 0; // restart from beginning next time
+        videoSource.currentTime = 0;
       }
     }
 

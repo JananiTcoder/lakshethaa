@@ -7,12 +7,14 @@
 <style>
   body { margin:0; background:black; overflow:hidden; }
   canvas { width:100vw; height:100vh; object-fit:cover; display:block; }
-  #videoSource { display:none; }
+  #videoSource, #videoCanvas { display:none; }
 </style>
 </head>
 <body>
 
-<video id="videoSource" src="output.mp4" autoplay loop muted></video>
+<video id="videoSource" src="output.mp4" autoplay loop muted playsinline></video>
+<canvas id="videoCanvas"></canvas>
+
 <video id="camera" autoplay playsinline muted style="display:none;"></video>
 <canvas id="canvas"></canvas>
 <img id="referenceImg" src="reference.jpg" style="display:none;">
@@ -22,10 +24,14 @@ const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const camera = document.getElementById('camera');
 const videoSource = document.getElementById('videoSource');
+const videoCanvas = document.getElementById('videoCanvas');
+const videoCtx = videoCanvas.getContext('2d');
 const refImg = document.getElementById('referenceImg');
 
-navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio:false })
-  .then(stream => camera.srcObject = stream);
+// Start back camera
+navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+  .then(stream => camera.srcObject = stream)
+  .catch(err => console.error(err));
 
 cv['onRuntimeInitialized'] = () => {
     let refColor = cv.imread(refImg);
@@ -54,7 +60,6 @@ cv['onRuntimeInitialized'] = () => {
         orb.detectAndCompute(grayFrame, new cv.Mat(), kpFrame, descFrame);
 
         if(!descFrame.empty()) {
-            let matches = new cv.DMatchVectorVector();
             let matched = new cv.DMatchVector();
             bf.match(descRef, descFrame, matched);
 
@@ -64,7 +69,7 @@ cv['onRuntimeInitialized'] = () => {
             }
 
             if(goodMatches.length >= 10){
-                // compute homography
+                // Compute homography
                 let srcPts = [];
                 let dstPts = [];
                 for(let i=0;i<goodMatches.length;i++){
@@ -79,13 +84,18 @@ cv['onRuntimeInitialized'] = () => {
                 let H = cv.findHomography(srcMat,dstMat,cv.RANSAC,5,mask);
 
                 if(!H.empty()){
-                    let vidFrame = cv.imread(videoSource); // single frame
+                    // Draw current video frame to hidden canvas
+                    videoCanvas.width = videoSource.videoWidth;
+                    videoCanvas.height = videoSource.videoHeight;
+                    videoCtx.drawImage(videoSource,0,0,videoCanvas.width,videoCanvas.height);
+                    let vidFrame = cv.imread(videoCanvas);
+
                     let warped = new cv.Mat();
                     let dsize = new cv.Size(frame.cols, frame.rows);
                     cv.warpPerspective(vidFrame, warped, H, dsize);
-                    // overlay
-                    let alpha = 1.0;
-                    cv.addWeighted(warped, alpha, frame, 1-alpha,0,frame);
+
+                    // Overlay video on camera frame
+                    cv.addWeighted(warped,1.0,frame,0,0,frame);
                     cv.imshow(canvas, frame);
 
                     vidFrame.delete();
@@ -111,6 +121,5 @@ cv['onRuntimeInitialized'] = () => {
     process();
 };
 </script>
-
 </body>
 </html>

@@ -23,11 +23,11 @@
 <video id="camera" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
 
-<video id="videoSource" src="output.mp4" playsinline></video>
+<video id="videoSource" src="output.mp4" playsinline muted></video>
 <canvas id="videoCanvas"></canvas>
 <img id="referenceImg" src="reference.jpg">
 
-<div id="debug">waiting for click…</div>
+<div id="debug">auto AR, muted</div>
 
 <script>
 const camera = document.getElementById('camera');
@@ -39,7 +39,6 @@ const videoCtx = videoCanvas.getContext('2d');
 const refImg = document.getElementById('referenceImg');
 const debugEl = document.getElementById('debug');
 
-let audioUnlocked = false;
 let videoReady = false;
 
 // Start camera
@@ -57,24 +56,9 @@ async function startCamera() {
 }
 startCamera();
 
-// When video metadata is loaded, we know width/height
 videoSource.addEventListener('loadedmetadata', () => {
   videoReady = true;
 });
-
-// One user gesture to unlock audio, but do NOT start playing
-document.body.addEventListener('click', () => {
-  audioUnlocked = true;
-  debugEl.textContent = 'tap ok, show reference image to start video';
-  videoSource.muted = true;
-  videoSource.play().then(() => {
-    videoSource.pause();
-    videoSource.currentTime = 0;
-    videoSource.muted = false;
-  }).catch(() => {
-    debugEl.textContent = 'tap ok, but silent pre-play failed';
-  });
-}, { once:true });
 
 cv['onRuntimeInitialized'] = () => {
   const refMat = cv.imread(refImg);
@@ -114,7 +98,6 @@ cv['onRuntimeInitialized'] = () => {
       const goodMatches = [];
       for (let i = 0; i < matches.size(); i++) {
         const d = matches.get(i).distance;
-        // more forgiving threshold
         if (d < 80) goodMatches.push(matches.get(i));
       }
       goodCount = goodMatches.length;
@@ -168,12 +151,10 @@ cv['onRuntimeInitialized'] = () => {
       matches.delete();
     }
 
-    // Simple debug text
     debugEl.textContent =
-      `audioUnlocked=${audioUnlocked} detected=${detected} goodMatches=${goodCount}`;
+      `detected=${detected} goodMatches=${goodCount}`;
 
-    // control video playback based on detection
-    if (detected && audioUnlocked) {
+    if (detected) {
       if (videoSource.paused) {
         videoSource.play().catch(() => {});
       }

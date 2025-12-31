@@ -12,10 +12,12 @@
 </head>
 <body>
 
+<!-- Hidden video and canvas for processing -->
 <video id="videoSource" src="output.mp4" autoplay loop muted playsinline></video>
 <canvas id="videoCanvas"></canvas>
 
-<video id="camera" autoplay playsinline muted style="display:none;"></video>
+<!-- Camera and output -->
+<video id="camera" autoplay playsinline muted></video>
 <canvas id="canvas"></canvas>
 <img id="referenceImg" src="reference.jpg" style="display:none;">
 
@@ -28,73 +30,85 @@ const videoCanvas = document.getElementById('videoCanvas');
 const videoCtx = videoCanvas.getContext('2d');
 const refImg = document.getElementById('referenceImg');
 
-// Start back camera
-navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
-  .then(stream => camera.srcObject = stream)
-  .catch(err => console.error(err));
+// START BACK CAMERA
+async function startCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { exact: "environment" } },
+            audio: false
+        });
+        camera.srcObject = stream;
+    } catch (e) {
+        console.warn("Back camera failed, falling back to default", e);
+        const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+        camera.srcObject = stream;
+    }
+}
+startCamera();
 
 cv['onRuntimeInitialized'] = () => {
-    let refColor = cv.imread(refImg);
-    let refGray = new cv.Mat();
+    const refColor = cv.imread(refImg);
+    const refGray = new cv.Mat();
     cv.cvtColor(refColor, refGray, cv.COLOR_BGR2GRAY);
 
-    let orb = new cv.ORB();
-    let kpRef = new cv.KeyPointVector();
-    let descRef = new cv.Mat();
+    const orb = new cv.ORB();
+    const kpRef = new cv.KeyPointVector();
+    const descRef = new cv.Mat();
     orb.detectAndCompute(refGray, new cv.Mat(), kpRef, descRef);
-
     const bf = new cv.BFMatcher(cv.NORM_HAMMING);
 
     function process() {
         if(camera.readyState !== 4) { requestAnimationFrame(process); return; }
 
+        // Draw camera
         canvas.width = camera.videoWidth;
         canvas.height = camera.videoHeight;
         ctx.drawImage(camera,0,0,canvas.width,canvas.height);
-        let frame = cv.imread(canvas);
-        let grayFrame = new cv.Mat();
+
+        const frame = cv.imread(canvas);
+        const grayFrame = new cv.Mat();
         cv.cvtColor(frame, grayFrame, cv.COLOR_BGR2GRAY);
 
-        let kpFrame = new cv.KeyPointVector();
-        let descFrame = new cv.Mat();
+        const kpFrame = new cv.KeyPointVector();
+        const descFrame = new cv.Mat();
         orb.detectAndCompute(grayFrame, new cv.Mat(), kpFrame, descFrame);
 
         if(!descFrame.empty()) {
-            let matched = new cv.DMatchVector();
-            bf.match(descRef, descFrame, matched);
+            const matches = new cv.DMatchVector();
+            bf.match(descRef, descFrame, matches);
 
             let goodMatches = [];
-            for(let i=0;i<matched.size();i++){
-                if(matched.get(i).distance < 60) goodMatches.push(matched.get(i));
+            for(let i=0;i<matches.size();i++){
+                if(matches.get(i).distance < 50) goodMatches.push(matches.get(i));
             }
 
-            if(goodMatches.length >= 10){
-                // Compute homography
-                let srcPts = [];
-                let dstPts = [];
+            if(goodMatches.length >= 10) {
+                // Homography points
+                let srcPts = [], dstPts = [];
                 for(let i=0;i<goodMatches.length;i++){
                     srcPts.push(kpRef.get(goodMatches[i].queryIdx).pt.x);
                     srcPts.push(kpRef.get(goodMatches[i].queryIdx).pt.y);
                     dstPts.push(kpFrame.get(goodMatches[i].trainIdx).pt.x);
                     dstPts.push(kpFrame.get(goodMatches[i].trainIdx).pt.y);
                 }
-                let srcMat = cv.matFromArray(goodMatches.length,1,cv.CV_32FC2,srcPts);
-                let dstMat = cv.matFromArray(goodMatches.length,1,cv.CV_32FC2,dstPts);
-                let mask = new cv.Mat();
-                let H = cv.findHomography(srcMat,dstMat,cv.RANSAC,5,mask);
 
-                if(!H.empty()){
-                    // Draw current video frame to hidden canvas
+                const srcMat = cv.matFromArray(goodMatches.length,1,cv.CV_32FC2,srcPts);
+                const dstMat = cv.matFromArray(goodMatches.length,1,cv.CV_32FC2,dstPts);
+                const mask = new cv.Mat();
+                const H = cv.findHomography(srcMat, dstMat, cv.RANSAC,5,mask);
+
+                if(!H.empty()) {
+                    // Draw video frame to hidden canvas
                     videoCanvas.width = videoSource.videoWidth;
                     videoCanvas.height = videoSource.videoHeight;
                     videoCtx.drawImage(videoSource,0,0,videoCanvas.width,videoCanvas.height);
-                    let vidFrame = cv.imread(videoCanvas);
+                    const vidFrame = cv.imread(videoCanvas);
 
-                    let warped = new cv.Mat();
-                    let dsize = new cv.Size(frame.cols, frame.rows);
+                    const warped = new cv.Mat();
+                    const dsize = new cv.Size(frame.cols, frame.rows);
                     cv.warpPerspective(vidFrame, warped, H, dsize);
 
-                    // Overlay video on camera frame
+                    // Overlay
                     cv.addWeighted(warped,1.0,frame,0,0,frame);
                     cv.imshow(canvas, frame);
 
@@ -106,8 +120,7 @@ cv['onRuntimeInitialized'] = () => {
                     mask.delete();
                 }
             }
-
-            matched.delete();
+            matches.delete();
         }
 
         frame.delete();

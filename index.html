@@ -21,12 +21,9 @@
 <script>
 const camera = document.getElementById('camera');
 const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
-
 const videoSource = document.getElementById('videoSource');
 const videoCanvas = document.getElementById('videoCanvas');
 const videoCtx = videoCanvas.getContext('2d');
-
 const refImg = document.getElementById('referenceImg');
 
 // Start back camera
@@ -51,7 +48,7 @@ cv['onRuntimeInitialized'] = () => {
     const refGray = new cv.Mat();
     cv.cvtColor(refMat, refGray, cv.COLOR_BGR2GRAY);
 
-    const orb = new cv.ORB(1500);
+    const orb = new cv.ORB();
     const kpRef = new cv.KeyPointVector();
     const descRef = new cv.Mat();
     orb.detectAndCompute(refGray, new cv.Mat(), kpRef, descRef);
@@ -59,13 +56,12 @@ cv['onRuntimeInitialized'] = () => {
     const bf = new cv.BFMatcher(cv.NORM_HAMMING);
 
     function process() {
-        if(camera.readyState !== 4) { requestAnimationFrame(process); return; }
+        if (camera.readyState !== 4) { requestAnimationFrame(process); return; }
 
         canvas.width = camera.videoWidth;
         canvas.height = camera.videoHeight;
-        ctx.drawImage(camera, 0, 0, canvas.width, canvas.height);
 
-        let frame = cv.imread(canvas);
+        let frame = cv.imread(camera);
         let grayFrame = new cv.Mat();
         cv.cvtColor(frame, grayFrame, cv.COLOR_BGR2GRAY);
 
@@ -73,35 +69,34 @@ cv['onRuntimeInitialized'] = () => {
         const descFrame = new cv.Mat();
         orb.detectAndCompute(grayFrame, new cv.Mat(), kpFrame, descFrame);
 
-        if(!descFrame.empty()){
+        if (!descFrame.empty()) {
             const matches = new cv.DMatchVector();
             bf.match(descRef, descFrame, matches);
 
             let goodMatches = [];
-            for(let i=0;i<matches.size();i++){
-                if(matches.get(i).distance < 50) goodMatches.push(matches.get(i));
+            for (let i = 0; i < matches.size(); i++) {
+                if (matches.get(i).distance < 50) goodMatches.push(matches.get(i));
             }
 
-            if(goodMatches.length >= 10){
-                // Homography
+            if (goodMatches.length >= 10) {
                 const srcPts = [], dstPts = [];
-                for(let i=0;i<goodMatches.length;i++){
+                for (let i = 0; i < goodMatches.length; i++) {
                     srcPts.push(kpRef.get(goodMatches[i].queryIdx).pt.x);
                     srcPts.push(kpRef.get(goodMatches[i].queryIdx).pt.y);
                     dstPts.push(kpFrame.get(goodMatches[i].trainIdx).pt.x);
                     dstPts.push(kpFrame.get(goodMatches[i].trainIdx).pt.y);
                 }
 
-                const srcMat = cv.matFromArray(goodMatches.length,1,cv.CV_32FC2,srcPts);
-                const dstMat = cv.matFromArray(goodMatches.length,1,cv.CV_32FC2,dstPts);
+                const srcMat = cv.matFromArray(goodMatches.length, 1, cv.CV_32FC2, srcPts);
+                const dstMat = cv.matFromArray(goodMatches.length, 1, cv.CV_32FC2, dstPts);
                 const mask = new cv.Mat();
-                const H = cv.findHomography(srcMat, dstMat, cv.RANSAC,5,mask);
+                const H = cv.findHomography(srcMat, dstMat, cv.RANSAC, 5, mask);
 
-                if(!H.empty()){
+                if (!H.empty()) {
                     // Draw current video frame to hidden canvas
                     videoCanvas.width = videoSource.videoWidth;
                     videoCanvas.height = videoSource.videoHeight;
-                    videoCtx.drawImage(videoSource,0,0,videoCanvas.width,videoCanvas.height);
+                    videoCtx.drawImage(videoSource, 0, 0, videoCanvas.width, videoCanvas.height);
                     const vidFrame = cv.imread(videoCanvas);
 
                     // Warp video to detected image
@@ -109,12 +104,19 @@ cv['onRuntimeInitialized'] = () => {
                     const dsize = new cv.Size(frame.cols, frame.rows);
                     cv.warpPerspective(vidFrame, warped, H, dsize);
 
-                    // Overlay only warped video on camera frame
-                    cv.addWeighted(warped,1.0,frame,0,0,frame);
+                    // Create mask from warped video
+                    const maskWarped = new cv.Mat();
+                    cv.cvtColor(warped, maskWarped, cv.COLOR_BGR2GRAY);
+                    cv.threshold(maskWarped, maskWarped, 1, 255, cv.THRESH_BINARY);
+
+                    // Copy warped video onto frame using mask
+                    warped.copyTo(frame, maskWarped);
+
                     cv.imshow(canvas, frame);
 
                     vidFrame.delete();
                     warped.delete();
+                    maskWarped.delete();
                     H.delete();
                     srcMat.delete();
                     dstMat.delete();

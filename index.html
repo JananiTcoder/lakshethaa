@@ -1,78 +1,83 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Camera Image Detection (ORB)</title>
+<meta charset="UTF-8">
+<title>Image Replace With Video</title>
 
-  <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 
-  <style>
-    body {
-      margin: 0;
-      background: black;
-      overflow: hidden;
-    }
+<style>
+  body {
+    margin: 0;
+    background: black;
+    overflow: hidden;
+  }
 
-    #cameraView {
-      width: 100vw;
-      height: 100vh;
-      object-fit: cover;
-    }
+  #cameraView {
+    width: 100vw;
+    height: 100vh;
+    object-fit: cover;
+  }
 
-    #overlay {
-      position: absolute;
-      top: 30%;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 300px;
-      height: 200px;
-    }
+  #overlay {
+    position: absolute;
+    top: 30%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 300px;
+    height: 200px;
+  }
 
-    #resultVideo {
-      display: none;
-      width: 100%;
-      height: 100%;
-    }
+  #targetImg, #resultVideo {
+    width: 100%;
+    height: 100%;
+  }
 
-    #camera, #canvas, #referenceImg {
-      display: none;
-    }
-  </style>
+  #resultVideo {
+    display: none;
+  }
+
+  #camera, #canvas {
+    display: none;
+  }
+</style>
 </head>
 <body>
 
-<!-- Visible camera -->
+<!-- Camera -->
 <video id="cameraView" autoplay playsinline muted></video>
 
+<!-- Overlay -->
 <div id="overlay">
-  <video id="resultVideo" src="output.mp4" controls></video>
+  <img id="targetImg" src="reference.jpg">
+  <video id="resultVideo" src="output.mp4" playsinline></video>
 </div>
 
-<!-- Hidden processing elements -->
+<!-- Hidden processing -->
 <video id="camera" autoplay playsinline></video>
 <canvas id="canvas"></canvas>
-<img id="referenceImg" src="reference.jpg">
 
 <script>
 const camera = document.getElementById("camera");
 const cameraView = document.getElementById("cameraView");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-const refImg = document.getElementById("referenceImg");
+
+const targetImg = document.getElementById("targetImg");
 const resultVideo = document.getElementById("resultVideo");
 
+let detected = false;
+
 /* ---------- FORCE BACK CAMERA ---------- */
-async function startBackCamera() {
+async function startCamera() {
   try {
-    // Preferred: strict rear camera
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { exact: "environment" } },
       audio: false
     });
     camera.srcObject = stream;
     cameraView.srcObject = stream;
-  } catch (err) {
-    // Fallback: rear camera if exact not supported
+  } catch {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "environment" },
       audio: false
@@ -82,75 +87,81 @@ async function startBackCamera() {
   }
 }
 
-startBackCamera();
+startCamera();
 
-/* ---------- OPENCV LOGIC ---------- */
-refImg.onload = () => {
-  cv.onRuntimeInitialized = () => {
-    console.log("OpenCV ready (ORB)");
+/* ---------- OPENCV ---------- */
+cv.onRuntimeInitialized = () => {
+  console.log("OpenCV ready");
 
-    let refColor = cv.imread(refImg);
-    let refGray = new cv.Mat();
-    cv.cvtColor(refColor, refGray, cv.COLOR_BGR2GRAY);
+  let refGray = new cv.Mat();
+  let refColor = cv.imread(targetImg);
+  cv.cvtColor(refColor, refGray, cv.COLOR_BGR2GRAY);
 
-    let orb = new cv.ORB();
-    let refKeypoints = new cv.KeyPointVector();
-    let refDescriptors = new cv.Mat();
+  let orb = new cv.ORB(1000);
+  let refKP = new cv.KeyPointVector();
+  let refDesc = new cv.Mat();
 
-    orb.detectAndCompute(refGray, new cv.Mat(), refKeypoints, refDescriptors);
+  orb.detectAndCompute(refGray, new cv.Mat(), refKP, refDesc);
 
-    function detect() {
-      if (camera.readyState !== 4) {
-        requestAnimationFrame(detect);
+  console.log("Reference keypoints:", refKP.size());
+
+  function detect() {
+    if (detected) return;
+    if (camera.readyState !== 4) {
+      requestAnimationFrame(detect);
+      return;
+    }
+
+    canvas.width = camera.videoWidth * 0.5;
+    canvas.height = camera.videoHeight * 0.5;
+    ctx.drawImage(camera, 0, 0, canvas.width, canvas.height);
+
+    let frame = cv.imread(canvas);
+    let gray = new cv.Mat();
+    cv.cvtColor(frame, gray, cv.COLOR_BGR2GRAY);
+
+    let kp = new cv.KeyPointVector();
+    let desc = new cv.Mat();
+
+    orb.detectAndCompute(gray, new cv.Mat(), kp, desc);
+
+    if (!desc.empty()) {
+      let bf = new cv.BFMatcher(cv.NORM_HAMMING);
+      let matches = new cv.DMatchVector();
+
+      bf.match(refDesc, desc, matches);
+
+      let good = 0;
+      for (let i = 0; i < matches.size(); i++) {
+        if (matches.get(i).distance < 70) good++;
+      }
+
+      console.log("Good matches:", good);
+
+      if (good >= 10) {
+        detected = true;
+
+        targetImg.style.display = "none";
+        resultVideo.style.display = "block";
+        resultVideo.muted = false;
+        resultVideo.play();
+
         return;
       }
 
-      const scale = 0.5;
-      canvas.width = camera.videoWidth * scale;
-      canvas.height = camera.videoHeight * scale;
-      ctx.drawImage(camera, 0, 0, canvas.width, canvas.height);
-
-      let frameColor = cv.imread(canvas);
-      let frameGray = new cv.Mat();
-      cv.cvtColor(frameColor, frameGray, cv.COLOR_BGR2GRAY);
-
-      let frameKeypoints = new cv.KeyPointVector();
-      let frameDescriptors = new cv.Mat();
-
-      orb.detectAndCompute(frameGray, new cv.Mat(), frameKeypoints, frameDescriptors);
-
-      if (!frameDescriptors.empty()) {
-        let bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
-        let matches = new cv.DMatchVector();
-
-        bf.match(refDescriptors, frameDescriptors, matches);
-
-        let goodMatches = 0;
-        for (let i = 0; i < matches.size(); i++) {
-          if (matches.get(i).distance < 50) goodMatches++;
-        }
-
-        if (goodMatches > 15) {
-          resultVideo.style.display = "block";
-          resultVideo.muted = false;
-          resultVideo.play();
-          return;
-        }
-
-        matches.delete();
-        bf.delete();
-      }
-
-      frameColor.delete();
-      frameGray.delete();
-      frameKeypoints.delete();
-      frameDescriptors.delete();
-
-      requestAnimationFrame(detect);
+      matches.delete();
+      bf.delete();
     }
 
-    detect();
-  };
+    frame.delete();
+    gray.delete();
+    kp.delete();
+    desc.delete();
+
+    requestAnimationFrame(detect);
+  }
+
+  detect();
 };
 </script>
 
